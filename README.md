@@ -1,81 +1,92 @@
 # OBS Video → Transcript Tool
 
-Python CLI tool to convert OBS recordings to text transcripts using OpenAI Whisper API.
+Công cụ CLI Python để chuyển đổi bản ghi hình OBS thành bản văn bản bằng OpenAI Whisper API.
 
-## Features
+## Tính năng
 
-- Convert video/audio files (MKV, MP4, MOV, FLV, AVI, WEBM, MP3, WAV, M4A) to text
-- Batch process entire directories
-- Output transcripts with timestamps `[HH:MM:SS] text`
-- Vietnamese and multi-language support
-- Automatic MP3 conversion using FFmpeg
-- Clean temporary files
+- Chuyển đổi video/audio (MKV, MP4, MOV, FLV, AVI, WEBM, MP3, WAV, M4A) sang văn bản
+- Xử lý hàng loạt cả thư mục
+- Xuất transcript có timestamps `[HH:MM:SS] text`
+- Hỗ trợ Tiếng Việt và đa ngôn ngữ
+- Tự động chuyển đổi sang MP3 bằng FFmpeg
+- Tự động xóa file tạm
 
-## Requirements
+## Yêu cầu
 
 - Python 3.10+
-- FFmpeg (must be in system PATH)
+- FFmpeg (phải có trong PATH)
 - OpenAI API key
 
-## Installation
+## Cài đặt
 
-1. Clone the repository:
+1. Clone repository:
 ```bash
 git clone <repo-url>
 cd video-to-text-whisper
 ```
 
-2. Install dependencies:
+2. (Khuyến nghị) Tạo virtual environment:
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Cài đặt dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Install FFmpeg:
-- **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
+4. Cài đặt FFmpeg:
+- **Windows**: Tải từ [ffmpeg.org](https://ffmpeg.org/download.html) và thêm vào PATH
 - **macOS**: `brew install ffmpeg`
-- **Linux**: `sudo apt install ffmpeg` or `sudo yum install ffmpeg`
+- **Linux**: `sudo apt install ffmpeg` hoặc `sudo yum install ffmpeg`
 
-4. Configure environment:
+5. Cấu hình môi trường:
 ```bash
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# Edit .env và thêm OPENAI_API_KEY của bạn
 ```
 
-Get your API key from: https://platform.openai.com/api-keys
+Lấy API key tại: https://platform.openai.com/api-keys
 
-## Usage
+## Cách sử dụng
 
-### Single file
+### Xử lý một file
 ```bash
 python main.py -i recording.mkv
 ```
 
-### Custom output directory
+### Chỉ định thư mục output
 ```bash
 python main.py -i recording.mp4 -o ./transcripts/
 ```
 
-### Batch process directory
+### Xử lý hàng loạt thư mục
 ```bash
 python main.py -i ./obs-recordings/
 ```
 
-### Specify language
+### Chỉ định ngôn ngữ
 ```bash
 python main.py -i recording.mp4 --language en
 ```
 
-### Keep temporary MP3 files
+### Giữ lại file MP3 tạm
 ```bash
 python main.py -i recording.flv --keep-mp3
 ```
 
-### Use prompt for better accuracy
+### Dùng prompt để tăng độ chính xác
 ```bash
-python main.py -i recording.mp4 --prompt "Technical discussion about AI and machine learning"
+python main.py -i recording.mp4 --prompt "Thảo luận kỹ thuật về AI và machine learning"
 ```
 
-## Output format
+## Định dạng output
 
 **output.txt**:
 ```
@@ -84,9 +95,9 @@ python main.py -i recording.mp4 --prompt "Technical discussion about AI and mach
 [00:00:07] Đầu tiên chúng ta cần mở terminal lên
 ```
 
-## Configuration
+## Cấu hình
 
-Edit `.env` file:
+Edit file `.env`:
 
 ```env
 OPENAI_API_KEY=sk-your-api-key-here
@@ -95,38 +106,39 @@ OUTPUT_DIR=
 KEEP_MP3=false
 ```
 
-## CLI Arguments
+## Tham số CLI
 
-| Argument | Short | Description | Default |
-|----------|-------|-------------|---------|
-| `--input` | `-i` | Input file or directory | (required) |
-| `--output` | `-o` | Output directory | Same as input |
-| `--language` | `-l` | Language code | `vi` |
-| `--keep-mp3` | | Keep temporary MP3 files | `false` |
-| `--prompt` | | Custom prompt for transcription | `null` |
+| Tham số | Ngắn | Mô tả | Mặc định |
+|---------|------|-------|----------|
+| `--input` | `-i` | File hoặc thư mục input | (bắt buộc) |
+| `--output` | `-o` | Thư mục output | Cùng với input |
+| `--language` | `-l` | Mã ngôn ngữ | `vi` |
+| `--keep-mp3` | | Giữ lại file MP3 tạm | `false` |
+| `--prompt` | | Prompt tùy chỉnh | `null` |
 
-## Supported languages
+## Các ngôn ngữ hỗ trợ
 
-Afrikaans, Arabic, Armenian, Azerbaijani, Belarusian, Bosnian, Bulgarian, Catalan, Chinese, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, Galician, German, Greek, Hebrew, Hindi, Hungarian, Icelandic, Indonesian, Italian, Japanese, Kannada, Kazakh, Korean, Latvian, Lithuanian, Macedonian, Malay, Marathi, Maori, Nepali, Norwegian, Persian, Polish, Portuguese, Romanian, Russian, Serbian, Slovak, Slovenian, Spanish, Swahili, Swedish, Tagalog, Tamil, Thai, Turkish, Ukrainian, Urdu, Vietnamese, and Welsh.
+Afrikaans, Ả Rập, Armenia, Azerbaijan, Belarus, Bosnia, Bulgaria, Catalan, Trung Quốc, Croatia, Séc, Đan Mạch, Hà Lan, Tiếng Anh, Estonia, Phần Lan, Pháp, Galicia, Đức, Hy Lạp, Hebrew, Hindi, Hungary, Iceland, Indonesia, Ý, Nhật Bản, Kannada, Kazakh, Hàn Quốc, Latvia, Lithuania, Macedonia, Mã Lai, Marathi, Maori, Nepal, Na Uy, Ba Tư, Ba Lan, Bồ Đào Nha, Romania, Nga, Serbia, Slovakia, Slovenia, Tây Ban Nha, Swahili, Thụy Điển, Tagalog, Tamil, Thái, Thổ Nhĩ Kỳ, Ukraine, Urdu, Tiếng Việt, và Welsh.
 
-## Limitations
+## Giới hạn
 
-- Whisper API has a 25MB file size limit per request
-- FFmpeg optimization reduces file size significantly
-- Sequential processing (no parallel) to avoid rate limits
+- Whisper API giới hạn 25MB mỗi request
+- FFmpeg tối ưu giúp giảm kích thước file đáng kể
+- Xử lý tuần tự (không parallel) để tránh rate limit
 
-## Project structure
+## Cấu trúc dự án
 
 ```
 video-to-text-whisper/
 ├── main.py              # Entry point CLI
 ├── requirements.txt     # Python dependencies
-├── .env                 # API keys (not in git)
-├── .env.example         # Environment template
+├── .env                 # API keys (không commit git)
+├── .env.example         # Mẫu cấu hình
 ├── .gitignore
-└── README.md
+├── README.md            # Hướng dẫn tiếng Anh
+└── README_VI.md         # Hướng dẫn tiếng Việt
 ```
 
-## License
+## Giấy phép
 
 MIT
