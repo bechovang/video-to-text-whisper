@@ -17,6 +17,24 @@ Python CLI tool to convert OBS recordings to text transcripts using OpenAI Whisp
 - FFmpeg (must be in system PATH)
 - OpenAI API key
 
+### Check installation
+
+Before starting, verify your system has Python and FFmpeg installed:
+
+```bash
+# Check Python version (requires 3.10+)
+python --version
+# Or on some systems:
+python3 --version
+
+# Check FFmpeg
+ffmpeg -version
+```
+
+If missing, install:
+- **Python**: Download from [python.org](https://www.python.org/downloads/)
+- **FFmpeg**: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
+
 ## Installation
 
 1. Clone the repository:

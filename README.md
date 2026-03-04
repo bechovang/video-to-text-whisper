@@ -17,6 +17,24 @@ Công cụ CLI Python để chuyển đổi bản ghi hình OBS thành bản vă
 - FFmpeg (phải có trong PATH)
 - OpenAI API key
 
+### Kiểm tra cài đặt
+
+Trước khi bắt đầu, kiểm tra xem máy đã cài Python và FFmpeg chưa:
+
+```bash
+# Kiểm tra phiên bản Python (yêu cầu 3.10+)
+python --version
+# Hoặc trên một số hệ thống:
+python3 --version
+
+# Kiểm tra FFmpeg
+ffmpeg -version
+```
+
+Nếu thiếu, cài đặt:
+- **Python**: Tải từ [python.org](https://www.python.org/downloads/)
+- **FFmpeg**: Tải từ [ffmpeg.org](https://ffmpeg.org/download.html)
+
 ## Cài đặt
 
 1. Clone repository:
