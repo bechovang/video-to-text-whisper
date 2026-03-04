@@ -5,17 +5,19 @@ Công cụ CLI Python để chuyển đổi bản ghi hình OBS thành bản vă
 ## Tính năng
 
 - Chuyển đổi video/audio (MKV, MP4, MOV, FLV, AVI, WEBM, MP3, WAV, M4A) sang văn bản
-- Xử lý hàng loạt cả thư mục
+- Xử lý hàng loạt cả thư mục (tự động dedup file trùng tên)
 - Xuất transcript có timestamps `[HH:MM:SS] text`
-- Hỗ trợ Tiếng Việt và đa ngôn ngữ
-- Tự động chuyển đổi sang MP3 bằng FFmpeg
-- Tự động xóa file tạm
+- Hỗ trợ Tiếng Việt và đa ngôn ngữ (50+ ngôn ngữ)
+- Tự động chuyển đổi sang MP3 bằng FFmpeg (32k mono, tối ưu cho API)
+- Tự động xóa file tạm trong thư mục hệ thống (%TEMP%)
+- Hỗ trợ filename có emoji/tiếng Việt
+- File .env có quyền cao hơn system environment variables
 
 ## Yêu cầu
 
 - Python 3.10+
 - FFmpeg (phải có trong PATH)
-- OpenAI API key
+- OpenAI API key (official OpenAI, không phải OpenRouter)
 
 ### Kiểm tra cài đặt
 
@@ -24,8 +26,6 @@ Trước khi bắt đầu, kiểm tra xem máy đã cài Python và FFmpeg chưa
 ```bash
 # Kiểm tra phiên bản Python (yêu cầu 3.10+)
 python --version
-# Hoặc trên một số hệ thống:
-python3 --version
 
 # Kiểm tra FFmpeg
 ffmpeg -version
@@ -104,6 +104,11 @@ python main.py -i recording.flv --keep-mp3
 python main.py -i recording.mp4 --prompt "Thảo luận kỹ thuật về AI và machine learning"
 ```
 
+### Thông dụng
+```bash
+python main.py -i ./video/ -o ./transcripts/
+```
+
 ## Định dạng output
 
 **output.txt**:
@@ -118,11 +123,13 @@ python main.py -i recording.mp4 --prompt "Thảo luận kỹ thuật về AI và
 Edit file `.env`:
 
 ```env
-OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_API_KEY=sk-proj-your-key-here
 DEFAULT_LANGUAGE=vi
 OUTPUT_DIR=
 KEEP_MP3=false
 ```
+
+**Lưu ý:** File `.env` sẽ override system environment variables.
 
 ## Tham số CLI
 
@@ -133,6 +140,7 @@ KEEP_MP3=false
 | `--language` | `-l` | Mã ngôn ngữ | `vi` |
 | `--keep-mp3` | | Giữ lại file MP3 tạm | `false` |
 | `--prompt` | | Prompt tùy chỉnh | `null` |
+| `--no-timestamps` | | Output không có timestamps | `false` |
 
 ## Các ngôn ngữ hỗ trợ
 
@@ -141,8 +149,18 @@ Afrikaans, Ả Rập, Armenia, Azerbaijan, Belarus, Bosnia, Bulgaria, Catalan, T
 ## Giới hạn
 
 - Whisper API giới hạn 25MB mỗi request
-- FFmpeg tối ưu giúp giảm kích thước file đáng kể
+- FFmpeg tối ưu (32k mono) giúp giảm kích thước file ~2-3MB cho 10-15 phút video
 - Xử lý tuần tự (không parallel) để tránh rate limit
+
+## Changelog
+
+### v1.0.0
+- Initial release
+- FFmpeg conversion to 32k mono MP3
+- OpenAI Whisper API integration
+- Batch processing with deduplication
+- Windows UTF-8 console support (emoji filenames)
+- .env override system environment variables
 
 ## Cấu trúc dự án
 
@@ -153,8 +171,8 @@ video-to-text-whisper/
 ├── .env                 # API keys (không commit git)
 ├── .env.example         # Mẫu cấu hình
 ├── .gitignore
-├── README.md            # Hướng dẫn tiếng Anh
-└── README_VI.md         # Hướng dẫn tiếng Việt
+├── README.md            # Hướng dẫn tiếng Việt
+└── README_EN.md         # Hướng dẫn tiếng Anh
 ```
 
 ## Giấy phép

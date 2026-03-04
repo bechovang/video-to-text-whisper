@@ -8,9 +8,16 @@ import os
 import sys
 import argparse
 import subprocess
-import re
+import shutil
+import uuid
 from pathlib import Path
 from typing import Optional, List, Tuple
+
+# Fix Windows console encoding for emoji/unicode
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 try:
     from openai import OpenAI
@@ -20,8 +27,8 @@ except ImportError as e:
     print(f"Details: {e}")
     sys.exit(1)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (override system env with .env file values)
+load_dotenv(override=True)
 
 
 class Config:
@@ -35,7 +42,9 @@ class Config:
 class VideoConverter:
     """Convert video files to MP3 using FFmpeg"""
 
-    SUPPORTED_FORMATS = {".mkv", ".mp4", ".mov", ".flv", ".avi", ".webm", ".mp3", ".wav", ".m4a"}
+    # MP3 excluded here — handled separately to force re-encode
+    SUPPORTED_FORMATS = {".mkv", ".mp4", ".mov", ".flv", ".avi", ".webm", ".wav", ".m4a"}
+    ALL_FORMATS = SUPPORTED_FORMATS | {".mp3"}
 
     @staticmethod
     def check_ffmpeg() -> bool:
@@ -44,50 +53,43 @@ class VideoConverter:
             subprocess.run(
                 ["ffmpeg", "-version"],
                 capture_output=True,
-                check=True
+                check=True,
+                encoding='utf-8',
+                errors='ignore'
             )
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
     @staticmethod
-    def to_mp3(input_path: Path, output_path: Optional[Path] = None) -> Path:
+    def to_mp3(input_path: Path, output_path: Path) -> Path:
         """
-        Convert video/audio file to MP3 optimized for Whisper
-
-        Args:
-            input_path: Path to input file
-            output_path: Path to output MP3 (auto-generated if None)
-
-        Returns:
-            Path to output MP3 file
+        Convert video/audio file to MP3 optimized for Whisper.
+        Always re-encodes to ensure correct format and small size.
         """
-        if output_path is None:
-            output_path = input_path.with_suffix(".mp3")
-
-        # FFmpeg command optimized for Whisper
-        # -vn: no video, -ar 16000: 16kHz sample rate, -ac 1: mono, -ab 128k: bitrate
         cmd = [
             "ffmpeg",
             "-i", str(input_path),
             "-vn",
             "-ar", "16000",
             "-ac", "1",
-            "-ab", "128k",
-            "-y",  # Overwrite output file
+            "-b:a", "32k",
+            "-y",
             str(output_path)
         ]
 
         try:
-            subprocess.run(
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
-                check=True,
-                text=True
+                encoding='utf-8',
+                errors='ignore'
             )
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg conversion failed:\n{result.stderr[-500:]}")
             return output_path
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"FFmpeg conversion failed: {e.stderr}")
+        except FileNotFoundError:
+            raise RuntimeError("FFmpeg not found. Please install FFmpeg and add to PATH")
 
 
 class WhisperTranscriber:
@@ -96,7 +98,8 @@ class WhisperTranscriber:
     def __init__(self, api_key: str):
         if not api_key:
             raise ValueError("OPENAI_API_KEY is required. Set it in .env file")
-        self.client = OpenAI(api_key=api_key)
+        # Explicitly use official OpenAI endpoint, ignore OPENAI_BASE_URL env var
+        self.client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
 
     def transcribe(
         self,
@@ -104,46 +107,44 @@ class WhisperTranscriber:
         language: str = "vi",
         prompt: Optional[str] = None
     ) -> dict:
-        """
-        Transcribe audio file using Whisper API
-
-        Args:
-            audio_path: Path to MP3 file
-            language: Language code (vi, en, auto, etc.)
-            prompt: Optional prompt to improve transcription
-
-        Returns:
-            Dictionary with 'text' and 'segments' (with timestamps)
-        """
-        # Check file size (Whisper API limit: 25MB)
+        """Transcribe audio file using Whisper API"""
         file_size_mb = audio_path.stat().st_size / (1024 * 1024)
-        if file_size_mb > 25:
+        print(f"       File size: {file_size_mb:.1f} MB")
+
+        if file_size_mb > 24:
             raise ValueError(
                 f"Audio file too large ({file_size_mb:.1f}MB). "
                 f"Whisper API limit is 25MB. Please split the audio first."
             )
 
-        with open(audio_path, "rb") as audio_file:
-            response = self.client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language=language if language != "auto" else None,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
-                prompt=prompt
-            )
+        # Use temp file with ASCII name for API compatibility
+        temp_path = Path(os.environ.get("TEMP", "/tmp")) / f"whisper_{uuid.uuid4().hex[:8]}.mp3"
 
-        return {
-            "text": response.text,
-            "segments": [
-                {
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text
-                }
+        try:
+            shutil.copy2(audio_path, temp_path)
+
+            with open(temp_path, "rb") as audio_file:
+                # File parameter should be a file object, not a tuple
+                response = self.client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language=language if language != "auto" else None,
+                    response_format="verbose_json",
+                    prompt=prompt
+                )
+
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        segments = []
+        if hasattr(response, "segments") and response.segments:
+            segments = [
+                {"start": seg.start, "end": seg.end, "text": seg.text}
                 for seg in response.segments
-            ] if hasattr(response, 'segments') else []
-        }
+            ]
+
+        return {"text": response.text, "segments": segments}
 
 
 class TranscriptWriter:
@@ -159,12 +160,7 @@ class TranscriptWriter:
 
     @staticmethod
     def write_txt(transcript: dict, output_path: Path, with_timestamps: bool = True):
-        """
-        Write transcript to TXT file
-
-        Format:
-        [HH:MM:SS] Text here...
-        """
+        """Write transcript to TXT file"""
         with open(output_path, "w", encoding="utf-8") as f:
             if with_timestamps and transcript.get("segments"):
                 for segment in transcript["segments"]:
@@ -179,19 +175,15 @@ def process_file(
     output_dir: Optional[Path] = None,
     language: str = "vi",
     keep_mp3: bool = False,
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None,
+    with_timestamps: bool = True
 ) -> Tuple[bool, str]:
-    """
-    Process a single video file
+    """Process a single video/audio file"""
 
-    Returns:
-        Tuple of (success, message)
-    """
-    # Validate input
     if not input_path.exists():
         return False, f"File not found: {input_path}"
 
-    if input_path.suffix.lower() not in VideoConverter.SUPPORTED_FORMATS:
+    if input_path.suffix.lower() not in VideoConverter.ALL_FORMATS:
         return False, f"Unsupported format: {input_path.suffix}"
 
     # Determine output paths
@@ -202,46 +194,54 @@ def process_file(
     else:
         output_txt = input_path.with_suffix(".txt")
 
-    # Check if already transcribed
     if output_txt.exists():
         return True, f"Skipped (already exists): {output_txt}"
 
-    # Check FFmpeg
     if not VideoConverter.check_ffmpeg():
         return False, "FFmpeg not found. Please install FFmpeg and add to PATH"
+
+    # Use temp dir for converted MP3 to avoid collisions
+    temp_dir = Path(os.environ.get("TEMP", "/tmp"))
+    mp3_path = temp_dir / f"convert_{uuid.uuid4().hex[:8]}.mp3"
 
     try:
         print(f"\n{'='*60}")
         print(f"Processing: {input_path.name}")
         print(f"{'='*60}")
 
-        # Step 1: Convert to MP3
+        # Step 1: Convert to MP3 (always re-encode)
         print("[1/3] Converting to MP3...")
-        mp3_path = input_path.with_suffix(".mp3")
         VideoConverter.to_mp3(input_path, mp3_path)
         mp3_size_mb = mp3_path.stat().st_size / (1024 * 1024)
-        print(f"       Created: {mp3_path.name} ({mp3_size_mb:.1f} MB)")
+        print(f"       Converted: {mp3_size_mb:.1f} MB")
+
+        # Optionally keep MP3 alongside original
+        if keep_mp3 or Config.KEEP_MP3:
+            keep_path = input_path.with_suffix(".mp3")
+            shutil.copy2(mp3_path, keep_path)
+            print(f"       Kept MP3: {keep_path.name}")
 
         # Step 2: Transcribe
         print("[2/3] Transcribing with Whisper API...")
         transcriber = WhisperTranscriber(Config.OPENAI_API_KEY)
         transcript = transcriber.transcribe(mp3_path, language, prompt)
-        print(f"       Transcribed {len(transcript.get('segments', []))} segments")
+        seg_count = len(transcript.get("segments", []))
+        print(f"       Got {seg_count} segments")
 
         # Step 3: Write output
         print("[3/3] Writing transcript...")
-        TranscriptWriter.write_txt(transcript, output_txt)
+        TranscriptWriter.write_txt(transcript, output_txt, with_timestamps)
         print(f"       Output: {output_txt}")
-
-        # Cleanup
-        if not keep_mp3 and not Config.KEEP_MP3:
-            mp3_path.unlink()
-            print(f"       Cleaned up: {mp3_path.name}")
 
         return True, f"Success: {output_txt}"
 
     except Exception as e:
         return False, f"Error: {str(e)}"
+
+    finally:
+        # Always clean up temp MP3
+        if mp3_path.exists():
+            mp3_path.unlink()
 
 
 def batch_process(
@@ -249,14 +249,26 @@ def batch_process(
     output_dir: Optional[Path] = None,
     language: str = "vi",
     keep_mp3: bool = False,
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None,
+    with_timestamps: bool = True
 ) -> List[Tuple[bool, str]]:
     """Process all supported files in a directory"""
     results = []
 
-    video_files = []
-    for ext in VideoConverter.SUPPORTED_FORMATS:
-        video_files.extend(input_dir.glob(f"*{ext}"))
+    # Collect files, deduplicate by stem (prefer mp4/mkv over mp3)
+    seen_stems = {}
+    for ext in VideoConverter.ALL_FORMATS:
+        for f in input_dir.glob(f"*{ext}"):
+            stem = f.stem
+            if stem not in seen_stems:
+                seen_stems[stem] = f
+            else:
+                # Prefer non-MP3 source (original video)
+                existing = seen_stems[stem]
+                if existing.suffix.lower() == ".mp3" and ext != ".mp3":
+                    seen_stems[stem] = f
+
+    video_files = sorted(seen_stems.values())
 
     if not video_files:
         print(f"No supported video files found in: {input_dir}")
@@ -264,8 +276,8 @@ def batch_process(
 
     print(f"\nFound {len(video_files)} file(s) to process")
 
-    for video_file in sorted(video_files):
-        result = process_file(video_file, output_dir, language, keep_mp3, prompt)
+    for video_file in video_files:
+        result = process_file(video_file, output_dir, language, keep_mp3, prompt, with_timestamps)
         results.append(result)
         print(result[1])
 
@@ -285,83 +297,46 @@ Examples:
         """
     )
 
-    parser.add_argument(
-        "-i", "--input",
-        type=str,
-        required=True,
-        help="Input file or directory path"
-    )
-
-    parser.add_argument(
-        "-o", "--output",
-        type=str,
-        default=None,
-        help="Output directory (default: same as input)"
-    )
-
-    parser.add_argument(
-        "-l", "--language",
-        type=str,
-        default=Config.DEFAULT_LANGUAGE,
-        help="Language code (default: %(default)s)"
-    )
-
-    parser.add_argument(
-        "--keep-mp3",
-        action="store_true",
-        help="Keep temporary MP3 files"
-    )
-
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        default=None,
-        help="Optional prompt to improve transcription quality"
-    )
-
-    parser.add_argument(
-        "--no-timestamps",
-        action="store_true",
-        help="Output plain text without timestamps"
-    )
+    parser.add_argument("-i", "--input", type=str, required=True,
+                        help="Input file or directory path")
+    parser.add_argument("-o", "--output", type=str, default=None,
+                        help="Output directory (default: same as input)")
+    parser.add_argument("-l", "--language", type=str, default=Config.DEFAULT_LANGUAGE,
+                        help="Language code (default: %(default)s)")
+    parser.add_argument("--keep-mp3", action="store_true",
+                        help="Keep converted MP3 files alongside originals")
+    parser.add_argument("--prompt", type=str, default=None,
+                        help="Optional prompt to improve transcription quality")
+    parser.add_argument("--no-timestamps", action="store_true",
+                        help="Output plain text without timestamps")
 
     args = parser.parse_args()
 
-    # Validate API key
     if not Config.OPENAI_API_KEY:
         print("Error: OPENAI_API_KEY not found in .env file")
-        print("Please create a .env file with your OpenAI API key")
         sys.exit(1)
 
     input_path = Path(args.input)
-
     if not input_path.exists():
         print(f"Error: Input path does not exist: {input_path}")
         sys.exit(1)
 
     output_dir = Path(args.output) if args.output else None
+    with_timestamps = not args.no_timestamps
 
-    # Process single file or directory
     if input_path.is_file():
         success, message = process_file(
-            input_path,
-            output_dir,
-            args.language,
-            args.keep_mp3,
-            args.prompt
+            input_path, output_dir, args.language,
+            args.keep_mp3, args.prompt, with_timestamps
         )
         print(message)
         sys.exit(0 if success else 1)
     else:
         results = batch_process(
-            input_path,
-            output_dir,
-            args.language,
-            args.keep_mp3,
-            args.prompt
+            input_path, output_dir, args.language,
+            args.keep_mp3, args.prompt, with_timestamps
         )
 
-        # Summary
         success_count = sum(1 for r in results if r[0])
         fail_count = len(results) - success_count
 
