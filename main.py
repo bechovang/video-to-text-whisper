@@ -39,6 +39,51 @@ class Config:
     KEEP_MP3 = os.getenv("KEEP_MP3", "false").lower() == "true"
 
 
+class AudioSplitter:
+    """Split large audio files into smaller chunks for Whisper API"""
+
+    @staticmethod
+    def get_duration(audio_path: Path) -> float:
+        """Get audio duration in seconds using ffprobe"""
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path)
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return float(result.stdout.strip())
+        except (subprocess.CalledProcessError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def split_audio(audio_path: Path, output_dir: Path, chunk_duration: int = 600) -> List[Path]:
+        """
+        Split audio into chunks. Default: 10 minutes per chunk.
+        Returns list of chunk file paths sorted by order.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "ffmpeg", "-i", str(audio_path),
+            "-f", "segment",
+            "-segment_time", str(chunk_duration),
+            "-c", "copy",
+            "-vn",
+            "-y",
+            str(output_dir / "chunk_%03d.mp3")
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, check=True, encoding='utf-8', errors='ignore')
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to split audio: {e.stderr[-500:] if e.stderr else str(e)}")
+
+        chunks = sorted(output_dir.glob("chunk_*.mp3"))
+        return chunks
+
+
 class VideoConverter:
     """Convert video files to MP3 using FFmpeg"""
 
@@ -73,7 +118,7 @@ class VideoConverter:
             "-vn",
             "-ar", "16000",
             "-ac", "1",
-            "-b:a", "32k",
+            "-b:a", "64k",
             "-y",
             str(output_path)
         ]
@@ -100,23 +145,34 @@ class WhisperTranscriber:
             raise ValueError("OPENAI_API_KEY is required. Set it in .env file")
         # Explicitly use official OpenAI endpoint, ignore OPENAI_BASE_URL env var
         self.client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
+        self.chunk_duration = 600  # 10 minutes per chunk (adjustable)
 
     def transcribe(
         self,
         audio_path: Path,
         language: str = "vi",
-        prompt: Optional[str] = None
+        prompt: Optional[str] = None,
+        need_segments: bool = True
     ) -> dict:
-        """Transcribe audio file using Whisper API"""
+        """Transcribe audio file using Whisper API. Automatically splits large files."""
         file_size_mb = audio_path.stat().st_size / (1024 * 1024)
         print(f"       File size: {file_size_mb:.1f} MB")
 
-        if file_size_mb > 24:
-            raise ValueError(
-                f"Audio file too large ({file_size_mb:.1f}MB). "
-                f"Whisper API limit is 25MB. Please split the audio first."
-            )
+        # Check duration for better chunking decision
+        duration = AudioSplitter.get_duration(audio_path)
+        duration_min = duration / 60
+        print(f"       Duration: {duration_min:.1f} minutes")
 
+        # If file is small enough, transcribe directly
+        if file_size_mb <= 24:
+            return self._transcribe_single(audio_path, language, prompt, need_segments)
+
+        # File too large - split and transcribe chunks
+        print(f"       File too large for single request. Splitting into chunks...")
+        return self._transcribe_chunks(audio_path, language, prompt, need_segments)
+
+    def _transcribe_single(self, audio_path: Path, language: str, prompt: Optional[str], need_segments: bool) -> dict:
+        """Transcribe a single audio file (within size limit)"""
         # Use temp file with ASCII name for API compatibility
         temp_path = Path(os.environ.get("TEMP", "/tmp")) / f"whisper_{uuid.uuid4().hex[:8]}.mp3"
 
@@ -124,12 +180,11 @@ class WhisperTranscriber:
             shutil.copy2(audio_path, temp_path)
 
             with open(temp_path, "rb") as audio_file:
-                # File parameter should be a file object, not a tuple
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     language=language if language != "auto" else None,
-                    response_format="verbose_json",
+                    response_format="verbose_json" if need_segments else "text",
                     prompt=prompt
                 )
 
@@ -138,13 +193,67 @@ class WhisperTranscriber:
                 temp_path.unlink()
 
         segments = []
-        if hasattr(response, "segments") and response.segments:
-            segments = [
-                {"start": seg.start, "end": seg.end, "text": seg.text}
-                for seg in response.segments
-            ]
+        if need_segments:
+            if hasattr(response, "segments") and response.segments:
+                segments = [
+                    {"start": seg.start, "end": seg.end, "text": seg.text}
+                    for seg in response.segments
+                ]
+            return {"text": response.text, "segments": segments}
+        else:
+            # text format returns string directly
+            return {"text": response, "segments": []}
 
-        return {"text": response.text, "segments": segments}
+    def _transcribe_chunks(self, audio_path: Path, language: str, prompt: Optional[str], need_segments: bool) -> dict:
+        """Split audio and transcribe each chunk"""
+        import time
+
+        # Create temp directory for chunks
+        temp_dir = Path(os.environ.get("TEMP", "/tmp")) / f"whisper_chunks_{uuid.uuid4().hex[:8]}"
+
+        try:
+            # Split audio into chunks
+            print(f"       Splitting audio into {self.chunk_duration // 60}-minute chunks...")
+            chunks = AudioSplitter.split_audio(audio_path, temp_dir, self.chunk_duration)
+            print(f"       Created {len(chunks)} chunks")
+
+            all_text = []
+            all_segments = []
+            time_offset = 0.0
+
+            for i, chunk in enumerate(chunks, 1):
+                print(f"       Processing chunk {i}/{len(chunks)}...")
+                result = self._transcribe_single(chunk, language, prompt, need_segments)
+
+                # Append text
+                all_text.append(result["text"])
+
+                # Adjust segment timestamps and collect (only if needed)
+                if need_segments:
+                    for seg in result.get("segments", []):
+                        all_segments.append({
+                            "start": seg["start"] + time_offset,
+                            "end": seg["end"] + time_offset,
+                            "text": seg["text"]
+                        })
+
+                # Update time offset for next chunk
+                chunk_duration = AudioSplitter.get_duration(chunk)
+                time_offset += chunk_duration
+
+                # Small delay to avoid rate limiting
+                if i < len(chunks):
+                    time.sleep(0.5)
+
+            return {
+                "text": " ".join(all_text),
+                "segments": all_segments if need_segments else []
+            }
+
+        finally:
+            # Clean up chunks directory
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
 
 
 class TranscriptWriter:
@@ -176,7 +285,8 @@ def process_file(
     language: str = "vi",
     keep_mp3: bool = False,
     prompt: Optional[str] = None,
-    with_timestamps: bool = True
+    with_timestamps: bool = True,
+    both: bool = False
 ) -> Tuple[bool, str]:
     """Process a single video/audio file"""
 
@@ -224,16 +334,35 @@ def process_file(
         # Step 2: Transcribe
         print("[2/3] Transcribing with Whisper API...")
         transcriber = WhisperTranscriber(Config.OPENAI_API_KEY)
-        transcript = transcriber.transcribe(mp3_path, language, prompt)
+        # Only need segments if creating timestamped output
+        need_segments = with_timestamps or both
+        transcript = transcriber.transcribe(mp3_path, language, prompt, need_segments)
         seg_count = len(transcript.get("segments", []))
-        print(f"       Got {seg_count} segments")
+        if need_segments:
+            print(f"       Got {seg_count} segments")
+        else:
+            print(f"       Got plain text (no segments - cheaper/faster)")
 
         # Step 3: Write output
         print("[3/3] Writing transcript...")
-        TranscriptWriter.write_txt(transcript, output_txt, with_timestamps)
-        print(f"       Output: {output_txt}")
 
-        return True, f"Success: {output_txt}"
+        # Create both files if requested
+        if both:
+            # File with timestamps
+            output_txt_ts = output_txt.parent / f"{output_txt.stem}_ts.txt"
+            TranscriptWriter.write_txt(transcript, output_txt_ts, True)
+            print(f"       Output (with timestamps): {output_txt_ts}")
+
+            # File without timestamps
+            output_txt_no_ts = output_txt.parent / f"{output_txt.stem}_plain.txt"
+            TranscriptWriter.write_txt(transcript, output_txt_no_ts, False)
+            print(f"       Output (plain text): {output_txt_no_ts}")
+
+            return True, f"Success: Created 2 files"
+        else:
+            TranscriptWriter.write_txt(transcript, output_txt, with_timestamps)
+            print(f"       Output: {output_txt}")
+            return True, f"Success: {output_txt}"
 
     except Exception as e:
         return False, f"Error: {str(e)}"
@@ -250,7 +379,8 @@ def batch_process(
     language: str = "vi",
     keep_mp3: bool = False,
     prompt: Optional[str] = None,
-    with_timestamps: bool = True
+    with_timestamps: bool = True,
+    both: bool = False
 ) -> List[Tuple[bool, str]]:
     """Process all supported files in a directory"""
     results = []
@@ -277,7 +407,7 @@ def batch_process(
     print(f"\nFound {len(video_files)} file(s) to process")
 
     for video_file in video_files:
-        result = process_file(video_file, output_dir, language, keep_mp3, prompt, with_timestamps)
+        result = process_file(video_file, output_dir, language, keep_mp3, prompt, with_timestamps, both)
         results.append(result)
         print(result[1])
 
@@ -307,8 +437,10 @@ Examples:
                         help="Keep converted MP3 files alongside originals")
     parser.add_argument("--prompt", type=str, default=None,
                         help="Optional prompt to improve transcription quality")
-    parser.add_argument("--no-timestamps", action="store_true",
-                        help="Output plain text without timestamps")
+    parser.add_argument("--timestamps", action="store_true",
+                        help="Output with timestamps (default: plain text only)")
+    parser.add_argument("--both", action="store_true",
+                        help="Create both files: with and without timestamps")
 
     args = parser.parse_args()
 
@@ -322,19 +454,20 @@ Examples:
         sys.exit(1)
 
     output_dir = Path(args.output) if args.output else None
-    with_timestamps = not args.no_timestamps
+    with_timestamps = args.timestamps
+    both = args.both
 
     if input_path.is_file():
         success, message = process_file(
             input_path, output_dir, args.language,
-            args.keep_mp3, args.prompt, with_timestamps
+            args.keep_mp3, args.prompt, with_timestamps, both
         )
         print(message)
         sys.exit(0 if success else 1)
     else:
         results = batch_process(
             input_path, output_dir, args.language,
-            args.keep_mp3, args.prompt, with_timestamps
+            args.keep_mp3, args.prompt, with_timestamps, both
         )
 
         success_count = sum(1 for r in results if r[0])
